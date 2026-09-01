@@ -1,0 +1,155 @@
+/*
+   RemoteXY + L298N + Ultraljudssensor (HC-SR04)
+   configured for Arduino R4 WiFi (Bluetooth BLE)
+*/
+
+//////////////////////////////////////////////
+//        RemoteXY include library          //
+//////////////////////////////////////////////
+
+#define REMOTEXY_MODE__ARDUINOBLE
+#include <ArduinoBLE.h>
+#include <RemoteXY.h>
+
+#define REMOTEXY_BLUETOOTH_NAME "RemoteXY_CarBetterUI"
+
+// RemoteXY GUI konfiguration
+#pragma pack(push, 1)
+uint8_t const PROGMEM RemoteXY_CONF_PROGMEM[] =   // 113 bytes V19
+  { 255,4,0,4,0,106,0,19,0,0,0,0,31,1,106,200,1,1,4,0,
+  5,15,102,75,75,32,2,26,31,4,1,16,15,165,32,2,26,4,89,18,
+  15,165,32,2,26,71,19,11,66,66,56,4,2,24,175,0,0,0,0,0,
+  0,160,66,0,0,160,65,0,0,32,65,0,0,160,64,24,0,1,0,0,
+  0,0,0,0,160,65,94,0,0,160,65,0,0,112,66,135,0,0,112,66,
+  0,0,190,66,24,0,0,190,66,0,0,200,66 };
+ 
+struct {
+
+    // input variables
+  int8_t joystick_01_x; // from -100 to 100
+  int8_t joystick_01_y; // from -100 to 100
+  int8_t slider_01; // from -100 to 100
+  int8_t slider_02; // from -100 to 100
+
+    // output variables
+  float instrument_02; // from 0 to 80
+
+    // other variable
+  uint8_t connect_flag;  // =1 if wire connected, else =0
+
+} RemoteXY;  
+#pragma pack(pop)
+
+// Motor-pins (L298N)
+#define IN1 9
+#define IN2 8
+#define ENA 10
+#define IN3 7
+#define IN4 6
+#define ENB 5
+
+// Sensor-pins (HC-SR04)
+#define TRIG_PIN 12
+#define ECHO_PIN 11
+
+/*
+  motorLeft, P1 = IN1 9, p2 = IN2 8, en = ENA 10
+  motorRight, P1 = IN3 7, P2 = IN4 6, en = ENB 5
+
+  driveMotor function used for both Left/Right motors at the same time
+  L298N (the module where the motors are connected) has the logic for an H-bridge: enables voltage for motor and opposite current direction
+  p1(IN1/IN3), p2(IN2/IN4), en(ENA/ENB)
+  if p1 LOW & p2 HIGH drive forward
+  if p1 HIGH & p2 LOW drive backward
+  if p1 LOW & p2 LOW stop
+*/
+
+// Function to control motors
+void driveMotor(int speed, int p1, int p2, int en) {
+  // Limit speed
+  speed = constrain(speed, -100, 100);
+ 
+  if (speed > 10) {
+    // Forward
+    digitalWrite(p1, LOW);
+    digitalWrite(p2, HIGH);
+  } else if (speed < -10) {
+    // Backward
+    digitalWrite(p1, HIGH);
+    digitalWrite(p2, LOW);
+  } else {
+    // Stop
+    digitalWrite(p1, LOW);
+    digitalWrite(p2, LOW);
+    speed = 0;
+  }
+  analogWrite(en, abs(speed) * 2.55);
+}
+
+// Function to read distance from sensor
+long getDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+ 
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  const long MaxDistance = 500; 
+  if (duration == 0) return MaxDistance;
+  return (duration * 0.034) / 2;
+
+}
+
+void setup() {
+  Serial.begin(9600);
+
+  // Motor-pins
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  pinMode(ENA, OUTPUT); pinMode(ENB, OUTPUT);
+ 
+  // Sensor-pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // Initialize RemoteXY
+  RemoteXY_Init();
+}
+
+void loop() {
+  // Handle communication
+  RemoteXYEngine.handler();
+
+  long distance = getDistance();
+  //RemoteXY distance info
+  RemoteXY.instrument_02 = (float)constrain(distance, 0, 80);
+
+  int motorLeft = 0;
+  int motorRight = 0;
+
+  // 1. Calculate control from Joystick (Prioritized if used)
+  if (abs(RemoteXY.joystick_01_x) > 10 || abs(RemoteXY.joystick_01_y) > 10) {
+    motorLeft = RemoteXY.joystick_01_y + RemoteXY.joystick_01_x; // y+x
+    motorRight = RemoteXY.joystick_01_y - RemoteXY.joystick_01_x; // y-x
+  }
+  // 2. Otherwise use Sliders
+  else {
+    motorRight = RemoteXY.slider_01;
+    motorLeft = RemoteXY.slider_02;
+  }
+
+  motorLeft = constrain(motorLeft, -100, 100);
+  motorRight = constrain(motorRight, -100, 100);
+
+  // SAFETY BLOCK: Stop if obstacle is closer than 20cm
+  if (distance < 20 && (motorLeft > 0 || motorRight > 0)) {
+    motorLeft = 0;
+    motorRight = 0;
+  }
+
+  // Motors
+  driveMotor(motorLeft, IN1, IN2, ENA);
+  driveMotor(motorRight, IN3, IN4, ENB);
+
+}
